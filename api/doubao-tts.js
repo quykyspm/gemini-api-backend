@@ -1,31 +1,44 @@
-// api/doubao-tts.js
 import WebSocket from 'ws';
 
 export const config = {
-  maxDuration: 30, // Cho phép chạy tối đa 30s
+  maxDuration: 30,
 };
 
 export default async function handler(req, res) {
-  // Cấu hình CORS để web GitHub Pages gọi sang được
-  res.setHeader("Access-Control-Allow-Credentials", true);
+  // 1. Cấu hình Headers CORS cho phép GitHub Pages truy cập
+  res.setHeader("Access-Control-Allow-Credentials", "true");
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version"
+  );
 
-  if (req.method === "OPTIONS") return res.status(200).end();
-  if (req.method !== "POST") return res.status(405).json({ error: "Chỉ chấp nhận POST" });
+  // 2. Bắt buộc trả về HTTP 200 OK cho yêu cầu preflight OPTIONS
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
 
-  const { text, speaker = "zh_male_yangguang_conversation_v4_wvae_bigtts" } = req.body;
-  if (!text) return res.status(400).json({ error: "Thiếu nội dung text" });
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
+
+  const { text, speaker = "zh_male_yangguang_conversation_v4_wvae_bigtts" } = req.body || {};
+  if (!text) {
+    return res.status(400).json({ error: "Thiếu nội dung text" });
+  }
 
   const cookie = process.env.DOUBAO_COOKIE;
-  if (!cookie) return res.status(500).json({ error: "Chưa cấu hình DOUBAO_COOKIE trên Vercel" });
+  if (!cookie) {
+    return res.status(500).json({ error: "Chưa cấu hình DOUBAO_COOKIE trên Vercel" });
+  }
 
   try {
     const audioBuffer = await getDoubaoAudio(text, speaker, cookie);
     res.setHeader("Content-Type", "audio/mpeg");
     return res.send(audioBuffer);
   } catch (error) {
+    console.error("Lỗi Doubao Server:", error);
     return res.status(500).json({ error: error.message });
   }
 }
@@ -45,9 +58,9 @@ function getDoubaoAudio(text, speaker, cookie) {
     });
 
     const chunks = [];
-    const timeout = setTimeout(() => {
+    const timer = setTimeout(() => {
       ws.terminate();
-      reject(new Error("Doubao TTS phản hồi quá lâu (Timeout)"));
+      reject(new Error("Doubao WebSocket Timeout sau 15s"));
     }, 15000);
 
     ws.on('open', () => {
@@ -61,8 +74,8 @@ function getDoubaoAudio(text, speaker, cookie) {
       } else {
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.event === "sentence_end" || msg.code !== 0) {
-            clearTimeout(timeout);
+          if (msg.event === "sentence_end" || (msg.code && msg.code !== 0)) {
+            clearTimeout(timer);
             ws.close();
           }
         } catch (e) {}
@@ -70,16 +83,16 @@ function getDoubaoAudio(text, speaker, cookie) {
     });
 
     ws.on('close', () => {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       if (chunks.length > 0) {
         resolve(Buffer.concat(chunks));
       } else {
-        reject(new Error("Không nhận được dữ liệu âm thanh từ Doubao"));
+        reject(new Error("Không nhận được luồng nhị phân audio từ Doubao"));
       }
     });
 
     ws.on('error', (err) => {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       reject(err);
     });
   });
