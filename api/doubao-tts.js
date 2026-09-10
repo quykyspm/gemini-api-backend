@@ -5,40 +5,30 @@ export const config = {
 };
 
 export default async function handler(req, res) {
-  // 1. Cấu hình Headers CORS cho phép GitHub Pages truy cập
+  res.setHeader("Access-Control-Allow-Origin", "https://quykyspm.github.io");
   res.setHeader("Access-Control-Allow-Credentials", "true");
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET,OPTIONS,PATCH,DELETE,POST,PUT");
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version"
-  );
+  res.setHeader("Access-Control-Allow-Methods", "POST,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // 2. Bắt buộc trả về HTTP 200 OK cho yêu cầu preflight OPTIONS
-  if (req.method === "OPTIONS") {
-    return res.status(200).end();
-  }
-
-  if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
-  }
+  if (req.method === "OPTIONS") return res.status(200).end();
+  if (req.method !== "POST") return res.status(405).json({ error: "Only POST allowed" });
 
   const { text, speaker = "zh_male_yangguang_conversation_v4_wvae_bigtts" } = req.body || {};
-  if (!text) {
-    return res.status(400).json({ error: "Thiếu nội dung text" });
-  }
+  if (!text) return res.status(400).json({ error: "Thiếu trường text" });
 
   const cookie = process.env.DOUBAO_COOKIE;
   if (!cookie) {
-    return res.status(500).json({ error: "Chưa cấu hình DOUBAO_COOKIE trên Vercel" });
+    console.error("LỖI: Biến môi trường DOUBAO_COOKIE chưa được thiết lập!");
+    return res.status(500).json({ error: "Chưa thiết lập biến DOUBAO_COOKIE trên Vercel" });
   }
 
   try {
     const audioBuffer = await getDoubaoAudio(text, speaker, cookie);
     res.setHeader("Content-Type", "audio/mpeg");
+    res.setHeader("Content-Length", audioBuffer.length);
     return res.send(audioBuffer);
   } catch (error) {
-    console.error("Lỗi Doubao Server:", error);
+    console.error("Doubao WebSocket Error:", error.message);
     return res.status(500).json({ error: error.message });
   }
 }
@@ -51,16 +41,18 @@ function getDoubaoAudio(text, speaker, cookie) {
 
     const ws = new WebSocket(wsUrl, {
       headers: {
-        "Origin": "https://www.doubao.com",
         "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "Origin": "https://www.doubao.com",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
       }
     });
 
     const chunks = [];
-    const timer = setTimeout(() => {
+    let receivedAudio = false;
+
+    const timeout = setTimeout(() => {
       ws.terminate();
-      reject(new Error("Doubao WebSocket Timeout sau 15s"));
+      reject(new Error("Doubao timeout (15s)"));
     }, 15000);
 
     ws.on('open', () => {
@@ -71,11 +63,12 @@ function getDoubaoAudio(text, speaker, cookie) {
     ws.on('message', (data) => {
       if (Buffer.isBuffer(data)) {
         chunks.push(data);
+        receivedAudio = true;
       } else {
         try {
           const msg = JSON.parse(data.toString());
           if (msg.event === "sentence_end" || (msg.code && msg.code !== 0)) {
-            clearTimeout(timer);
+            clearTimeout(timeout);
             ws.close();
           }
         } catch (e) {}
@@ -83,16 +76,16 @@ function getDoubaoAudio(text, speaker, cookie) {
     });
 
     ws.on('close', () => {
-      clearTimeout(timer);
-      if (chunks.length > 0) {
+      clearTimeout(timeout);
+      if (receivedAudio && chunks.length > 0) {
         resolve(Buffer.concat(chunks));
       } else {
-        reject(new Error("Không nhận được luồng nhị phân audio từ Doubao"));
+        reject(new Error("Không nhận được dữ liệu âm thanh từ Doubao (kiểm tra lại Cookie)"));
       }
     });
 
     ws.on('error', (err) => {
-      clearTimeout(timer);
+      clearTimeout(timeout);
       reject(err);
     });
   });
