@@ -40,39 +40,60 @@ export default async function handler(req, res) {
 
 function getDoubaoAudio(text, speaker, cookie) {
   return new Promise((resolve, reject) => {
-    const deviceId = "74" + Math.floor(10000000000000000 + Math.random() * 90000000000000000).toString().slice(0, 17);
-    const webId = "74" + Math.floor(10000000000000000 + Math.random() * 90000000000000000).toString().slice(0, 17);
-    
-    // Endpoint chuẩn theo client Python đảo ngược
-    const wsUrl = `wss://ws-samantha.doubao.com/samantha/audio/tts?speaker=${speaker}&format=mp3&speech_rate=0&pitch=0&language=zh&device_platform=web&aid=497858&version_code=20800&pc_version=2.46.3&device_id=${deviceId}&web_id=${webId}&samantha_web=1&use-olympus-account=1`;
+    // 1. Tạo ngẫu nhiên device_id và web_id gồm 19 chữ số bắt đầu bằng 74
+    const randId = () => "74" + Math.floor(10000000000000000 + Math.random() * 90000000000000000).toString().slice(0, 17);
+    const deviceId = randId();
+    const webId = randId();
 
+    // 2. Query URL chuẩn theo Doubao Python Reverse Client
+    const params = new URLSearchParams({
+      speaker: speaker,
+      format: "mp3",
+      speech_rate: "0",
+      pitch: "0",
+      version_code: "20800",
+      language: "zh",
+      device_platform: "web",
+      aid: "497858",
+      real_aid: "497858",
+      pkg_type: "release_version",
+      device_id: deviceId,
+      pc_version: "2.46.3",
+      web_id: webId,
+      tea_uuid: webId,
+      region: "",
+      sys_region: "",
+      samantha_web: "1",
+      "use-olympus-account": "1"
+    });
+
+    const wsUrl = `wss://ws-samantha.doubao.com/samantha/audio/tts?${params.toString()}`;
+
+    // 3. Headers giả lập chính xác trình duyệt
     const ws = new WebSocket(wsUrl, {
       headers: {
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache",
         "Origin": "https://www.doubao.com",
-        "Referer": "https://www.doubao.com/",
-        "Cookie": cookie,
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Cookie": cookie
       }
     });
 
     const audioChunks = [];
     const timer = setTimeout(() => {
       ws.terminate();
-      if (audioChunks.length > 0) {
-        resolve(Buffer.concat(audioChunks));
-      } else {
-        reject(new Error("Doubao timeout (15s)"));
-      }
+      reject(new Error("Doubao timeout (15s)"));
     }, 15000);
 
     ws.on('open', () => {
-      // Gửi event text và finish theo đúng giao thức đảo ngược
+      // Gửi event phát text
       ws.send(JSON.stringify({ event: "text", text: text }));
       ws.send(JSON.stringify({ event: "finish" }));
     });
 
     ws.on('message', (data) => {
-      // Dữ liệu nhị phân là các đoạn âm thanh MP3
       if (Buffer.isBuffer(data)) {
         audioChunks.push(data);
       } else {
@@ -80,10 +101,7 @@ function getDoubaoAudio(text, speaker, cookie) {
           const msg = JSON.parse(data.toString());
           if (msg.event === "sentence_end" || (msg.code && msg.code !== 0)) {
             clearTimeout(timer);
-            // Chờ thêm 300ms để nhận nốt các chunk binary cuối cùng trước khi đóng
-            setTimeout(() => {
-              ws.close();
-            }, 300);
+            setTimeout(() => ws.close(), 250);
           }
         } catch (e) {}
       }
@@ -91,7 +109,11 @@ function getDoubaoAudio(text, speaker, cookie) {
 
     ws.on('close', () => {
       clearTimeout(timer);
-      resolve(Buffer.concat(audioChunks));
+      if (audioChunks.length > 0) {
+        resolve(Buffer.concat(audioChunks));
+      } else {
+        reject(new Error("Không nhận được dữ liệu âm thanh từ Doubao (hãy kiểm tra lại 3 khóa Cookie)"));
+      }
     });
 
     ws.on('error', (err) => {
