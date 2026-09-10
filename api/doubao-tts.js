@@ -35,29 +35,44 @@ export default async function handler(req, res) {
 
 function getDoubaoAudio(text, speaker, cookie) {
   return new Promise((resolve, reject) => {
-    const deviceId = "74" + Math.floor(Math.random() * 10000000000000000);
-    const webId = "74" + Math.floor(Math.random() * 10000000000000000);
-    const wsUrl = `wss://ws-samantha.doubao.com/samantha/audio/tts?speaker=${speaker}&format=mp3&speech_rate=0&pitch=0&language=zh&device_platform=web&aid=497858&device_id=${deviceId}&web_id=${webId}&samantha_web=1`;
+    // 1. Khởi tạo device_id và web_id ngẫu nhiên 19 chữ số
+    const randId = () => "74" + Math.floor(10000000000000000 + Math.random() * 90000000000000000).toString().slice(0, 17);
+    const deviceId = randId();
+    const webId = randId();
 
+    // 2. Sử dụng endpoint WebSocket mới của Doubao
+    const wsUrl = `wss://frontier-audio-web-ws.doubao.com/api/v2/sami/voicegenie?api_app_key=GOqQpfo1fO7slHv8&namespace=VoiceGenie&version_code=20800&language=zh&device_platform=web&pkg_type=release_version&aid=497858&device_id=${deviceId}&web_id=${webId}&tea_uuid=${webId}&samantha_web=1&use-olympus-account=1`;
+
+    // 3. Giả lập đầy đủ các Header chuẩn của trình duyệt để tránh bị chặn 200 OK
     const ws = new WebSocket(wsUrl, {
       headers: {
-        "Cookie": cookie,
         "Origin": "https://www.doubao.com",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        "Referer": "https://www.doubao.com/",
+        "Cookie": cookie,
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "Cache-Control": "no-cache",
+        "Pragma": "no-cache"
       }
     });
 
     const chunks = [];
     let receivedAudio = false;
 
-    const timeout = setTimeout(() => {
+    const timer = setTimeout(() => {
       ws.terminate();
-      reject(new Error("Doubao timeout (15s)"));
+      reject(new Error("Doubao timeout kết nối sau 15s"));
     }, 15000);
 
     ws.on('open', () => {
-      ws.send(JSON.stringify({ event: "text", text: text }));
-      ws.send(JSON.stringify({ event: "finish" }));
+      // Gửi event phát văn bản kèm cấu hình voice
+      const payload = {
+        action: "speak",
+        speaker: speaker,
+        format: "mp3",
+        text: text
+      };
+      ws.send(JSON.stringify(payload));
     });
 
     ws.on('message', (data) => {
@@ -67,8 +82,8 @@ function getDoubaoAudio(text, speaker, cookie) {
       } else {
         try {
           const msg = JSON.parse(data.toString());
-          if (msg.event === "sentence_end" || (msg.code && msg.code !== 0)) {
-            clearTimeout(timeout);
+          if (msg.event === "sentence_end" || msg.is_end || (msg.code && msg.code !== 0)) {
+            clearTimeout(timer);
             ws.close();
           }
         } catch (e) {}
@@ -76,16 +91,16 @@ function getDoubaoAudio(text, speaker, cookie) {
     });
 
     ws.on('close', () => {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       if (receivedAudio && chunks.length > 0) {
         resolve(Buffer.concat(chunks));
       } else {
-        reject(new Error("Không nhận được dữ liệu âm thanh từ Doubao (kiểm tra lại Cookie)"));
+        reject(new Error("Không nhận được dữ liệu âm thanh từ Doubao (vui lòng kiểm tra lại Cookie)"));
       }
     });
 
     ws.on('error', (err) => {
-      clearTimeout(timeout);
+      clearTimeout(timer);
       reject(err);
     });
   });
